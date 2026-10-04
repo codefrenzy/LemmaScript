@@ -1392,6 +1392,7 @@ it; absent means current behavior. Unknown keys and bad values are errors.
 | `proof-dir` | relative path | source directory | no (Dafny only) |
 | `string-semantics` | `unicode-scalar` \| `javascript-utf16` | `unicode-scalar` | yes (Dafny only) |
 | `dafny-library` | `stdlib` \| `local` | `stdlib` | yes (Dafny only) |
+| `run-log` | boolean | `true` | no (Dafny only) |
 
 Eligible settings use `//@ option <key> <value>` before the first source
 statement. File values override project values; duplicates are errors.
