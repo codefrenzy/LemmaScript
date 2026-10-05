@@ -1,8 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { delimiter, join } from "node:path";
+import { dafnyCheckDiff, dafnyVerify } from "../src/dafny-commands.ts";
 import {
   RunLog, ensureLogDir, hashText, isPartialRun, parseTextLog, resolveLogDir, runLogEnabled, snapshotSource,
 } from "../src/run-log.ts";
@@ -199,6 +200,110 @@ test("dafnyArgs points Dafny at a temporary text log that readResults parses", (
     assert.deepEqual(log.readResults(), { passed: ["sumTo"], failed: ["arraySum"] });
     log.finish({ stage: "verify", exit: 1, dfyPath: source, results: log.readResults() });
     assert.equal(existsSync(file), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+// A stand-in for `dafny`: writes $FAKE_DAFNY_LOG to the text log path it is
+// given (if any) and exits with $FAKE_DAFNY_EXIT.
+const FAKE_DAFNY = `#!/bin/sh
+out=""
+for arg in "$@"; do
+  case "$arg" in
+    "text;LogFileName="*) out="\${arg#text;LogFileName=}" ;;
+  esac
+done
+if [ -n "$out" ] && [ -n "$FAKE_DAFNY_LOG" ]; then printf '%s' "$FAKE_DAFNY_LOG" > "$out"; fi
+exit "\${FAKE_DAFNY_EXIT:-0}"
+`;
+
+function withFakeDafny(env: { log?: string; exit?: number }, run: (root: string) => void): void {
+  const root = tempDir();
+  const saved = { PATH: process.env.PATH, LOG: process.env.FAKE_DAFNY_LOG, EXIT: process.env.FAKE_DAFNY_EXIT };
+  try {
+    mkdirSync(join(root, "bin"));
+    writeFileSync(join(root, "bin", "dafny"), FAKE_DAFNY);
+    chmodSync(join(root, "bin", "dafny"), 0o755);
+    process.env.PATH = `${join(root, "bin")}${delimiter}${saved.PATH ?? ""}`;
+    if (env.log === undefined) delete process.env.FAKE_DAFNY_LOG; else process.env.FAKE_DAFNY_LOG = env.log;
+    process.env.FAKE_DAFNY_EXIT = String(env.exit ?? 0);
+    run(root);
+  } finally {
+    for (const [key, value] of [["PATH", saved.PATH], ["FAKE_DAFNY_LOG", saved.LOG], ["FAKE_DAFNY_EXIT", saved.EXIT]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function verifyWithLog(root: string): boolean {
+  const source = join(root, "a.ts");
+  const dfy = join(root, "a.dfy");
+  writeFileSync(source, "export const a = 1;\n");
+  writeFileSync(dfy, "lemma L() {}\n");
+  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+  return dafnyVerify(dfy, root, undefined, undefined, log);
+}
+
+const posixOnly = { skip: process.platform === "win32" };
+
+test("a passing verification is recorded as ok with its members", posixOnly, () =>
+  withFakeDafny({ log: "Results for L (correctness)\n  Overall outcome: Correct\n", exit: 0 }, root => {
+    assert.equal(verifyWithLog(root), true);
+    const [r] = records(root);
+    assert.equal(r.stage, "ok");
+    assert.equal(r.exit, 0);
+    assert.deepEqual(r.passed, ["L"]);
+    assert.equal(r.partial, false);
+  }));
+
+test("a failing verification is recorded as verify with the failed member", posixOnly, () =>
+  withFakeDafny({ log: "Results for L (correctness)\n  Overall outcome: Errors\n", exit: 4 }, root => {
+    assert.equal(verifyWithLog(root), false);
+    const [r] = records(root);
+    assert.equal(r.stage, "verify");
+    assert.equal(r.exit, 1);
+    assert.deepEqual(r.failed, ["L"]);
+  }));
+
+test("a Dafny run that writes no results is recorded as resolve", posixOnly, () =>
+  withFakeDafny({ exit: 2 }, root => {
+    assert.equal(verifyWithLog(root), false);
+    const [r] = records(root);
+    assert.equal(r.stage, "resolve");
+    assert.equal(r.partial, true);
+  }));
+
+function checkDiffWithLog(root: string, generated: string, proof: string): boolean {
+  const source = join(root, "a.ts");
+  const gen = join(root, "a.dfy.gen");
+  const dfy = join(root, "a.dfy");
+  writeFileSync(source, "");
+  writeFileSync(gen, generated);
+  writeFileSync(dfy, proof);
+  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+  return dafnyCheckDiff(gen, dfy, log);
+}
+
+test("an additions-only failure is recorded as diff", () => {
+  const root = tempDir();
+  try {
+    assert.equal(checkDiffWithLog(root, "method M() {}\n", "method Changed() {}\n"), false);
+    const [r] = records(root);
+    assert.equal(r.stage, "diff");
+    assert.equal(r.exit, 1);
+    assert.equal(r.partial, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a passing additions-only check leaves the run open for verification to record", () => {
+  const root = tempDir();
+  try {
+    assert.equal(checkDiffWithLog(root, "method M() {}\n", "method M() {}\nlemma Proof() {}\n"), true);
+    assert.equal(existsSync(join(root, ".lemmascript", "runs.jsonl")), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
