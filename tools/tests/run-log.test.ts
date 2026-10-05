@@ -1,9 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { hashText, isPartialRun, parseTextLog, resolveLogDir, runLogEnabled } from "../src/run-log.ts";
+import {
+  RunLog, ensureLogDir, hashText, isPartialRun, parseTextLog, resolveLogDir, runLogEnabled, snapshotSource,
+} from "../src/run-log.ts";
 
 function tempDir(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), "lsc-run-log-test-")));
@@ -75,6 +77,128 @@ test("the log lives beside lemmascript.json, else at the git root, else in cwd",
     const loose = join(root, "loose.ts");
     writeFileSync(loose, "");
     assert.equal(resolveLogDir(loose, null), process.cwd());
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+function records(logDir: string): any[] {
+  return readFileSync(join(logDir, ".lemmascript", "runs.jsonl"), "utf8")
+    .trim().split("\n").map(line => JSON.parse(line));
+}
+
+test("ensureLogDir creates a self-ignoring directory and keeps an edited .gitignore", () => {
+  const root = tempDir();
+  try {
+    const dir = ensureLogDir(root);
+    assert.equal(dir, join(root, ".lemmascript"));
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "*\n");
+    writeFileSync(join(dir, ".gitignore"), "*\n# kept\n");
+    ensureLogDir(root);
+    assert.equal(readFileSync(join(dir, ".gitignore"), "utf8"), "*\n# kept\n");
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("snapshotSource stores each distinct version once, named by its hash", () => {
+  const root = tempDir();
+  try {
+    const dir = ensureLogDir(root);
+    const hash = snapshotSource(dir, "export const a = 1;\n");
+    assert.equal(hash, hashText("export const a = 1;\n"));
+    assert.equal(readFileSync(join(dir, "blobs", `${hash}.ts`), "utf8"), "export const a = 1;\n");
+    assert.equal(snapshotSource(dir, "export const a = 1;\n"), hash);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("finish appends one complete record and ignores later calls", () => {
+  const root = tempDir();
+  try {
+    const source = join(root, "src", "a.ts");
+    mkdirSync(join(root, "src"));
+    writeFileSync(source, "export const a = 1;\n");
+    const dfy = join(root, "src", "a.dfy");
+    writeFileSync(dfy, "lemma L() {}\n");
+    const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "9.9.9" });
+    log.finish({ stage: "verify", exit: 1, dfyPath: dfy, results: { passed: ["a"], failed: ["L"] } });
+    log.finish({ stage: "ok", exit: 0, dfyPath: dfy });
+    const [r, ...rest] = records(root);
+    assert.equal(rest.length, 0);
+    assert.deepEqual(Object.keys(r).sort(), [
+      "ci", "cmd", "dfyHash", "exit", "failed", "file", "id", "lsc", "partial", "passed", "stage", "ts", "tsHash", "type", "v",
+    ]);
+    assert.equal(r.v, 1);
+    assert.equal(r.type, "verify");
+    assert.match(r.id, /^[0-9a-f-]{36}$/);
+    assert.equal(r.cmd, "check");
+    assert.equal(r.file, "src/a.ts");
+    assert.equal(r.stage, "verify");
+    assert.equal(r.exit, 1);
+    assert.equal(r.partial, false);
+    assert.deepEqual(r.failed, ["L"]);
+    assert.deepEqual(r.passed, ["a"]);
+    assert.equal(r.tsHash, hashText("export const a = 1;\n"));
+    assert.equal(r.dfyHash, hashText("lemma L() {}\n"));
+    assert.equal(r.lsc, "9.9.9");
+    assert.equal(typeof r.ci, "boolean");
+    assert.ok(existsSync(join(root, ".lemmascript", "blobs", `${r.tsHash}.ts`)));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("a run without member results, or with a filter, is partial", () => {
+  const root = tempDir();
+  try {
+    const source = join(root, "a.ts");
+    writeFileSync(source, "");
+    new RunLog({ logDir: root, cmd: "regen", sourcePath: source, lscVersion: "0" })
+      .finish({ stage: "diff", exit: 1, dfyPath: join(root, "missing.dfy") });
+    new RunLog({ logDir: root, cmd: "check", sourcePath: source, extraFlags: "--filter-symbol=a", lscVersion: "0" })
+      .finish({ stage: "ok", exit: 0, dfyPath: join(root, "missing.dfy"), results: { passed: ["a"], failed: [] } });
+    const [diff, filtered] = records(root);
+    assert.equal(diff.partial, true);
+    assert.deepEqual(diff.passed, []);
+    assert.equal(diff.dfyHash, null);
+    assert.equal(filtered.partial, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("an unwritable log directory never throws", () => {
+  const root = tempDir();
+  try {
+    const blocker = join(root, "blocker");
+    writeFileSync(blocker, "a file, so nothing can be created beneath it");
+    const source = join(root, "a.ts");
+    writeFileSync(source, "");
+    const log = new RunLog({ logDir: join(blocker, "sub"), cmd: "check", sourcePath: source, lscVersion: "0" });
+    assert.doesNotThrow(() => log.dafnyArgs());
+    assert.doesNotThrow(() => log.finish({ stage: "ok", exit: 0, dfyPath: source }));
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("dafnyArgs points Dafny at a temporary text log that readResults parses", () => {
+  const root = tempDir();
+  try {
+    const source = join(root, "a.ts");
+    writeFileSync(source, "");
+    const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+    assert.equal(log.readResults(), null);
+    const args = log.dafnyArgs();
+    assert.equal(args[0], "--log-format");
+    const file = args[1].replace(/^text;LogFileName=/, "");
+    assert.equal(log.readResults(), null);
+    writeFileSync(file, TEXT_LOG);
+    assert.deepEqual(log.readResults(), { passed: ["sumTo"], failed: ["arraySum"] });
+    log.finish({ stage: "verify", exit: 1, dfyPath: source, results: log.readResults() });
+    assert.equal(existsSync(file), false);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

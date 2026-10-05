@@ -1,11 +1,14 @@
 /**
  * Run log: record each Dafny `lsc check` / `lsc regen` run in
- * `.lemmascript/runs.jsonl`, with a snapshot of the source (DESIGN_RUN_LOG.md).
- * Logging must never change lsc's output or exit code, so every filesystem
- * step is best-effort and swallows its own errors.
+ * `.lemmascript/runs.jsonl`, with a snapshot of the source, so that a later
+ * report can tell which failures were fixed and whether the fix changed the
+ * program or only the proof. Logging must never change lsc's output or exit
+ * code, so every filesystem step is best-effort and swallows its own errors.
  */
 
-import { createHash } from "crypto";
+import { createHash, randomUUID } from "crypto";
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "fs";
+import { tmpdir } from "os";
 import path from "path";
 import { findUp } from "./config.js";
 
@@ -58,4 +61,132 @@ export function resolveLogDir(sourcePath: string, configFile: string | null): st
   if (configFile) return path.dirname(path.resolve(configFile));
   const git = findUp(".git", sourcePath);
   return git ? path.dirname(git) : process.cwd();
+}
+
+export const RUN_LOG_SCHEMA_VERSION = 1;
+
+/**
+ * Where a run stopped: `diff` (additions-only check failed, Dafny never ran),
+ * `conflict` (regen merge conflict), `resolve` (Dafny produced no results),
+ * `verify` (Dafny reported failures), or `ok`.
+ */
+export type RunStage = "ok" | "verify" | "resolve" | "diff" | "conflict";
+
+export interface VerifyRecord {
+  v: number;
+  type: "verify";
+  id: string;
+  ts: string;
+  cmd: "check" | "regen";
+  file: string;
+  stage: RunStage;
+  exit: number;
+  partial: boolean;
+  failed: string[];
+  passed: string[];
+  tsHash: string | null;
+  dfyHash: string | null;
+  lsc: string;
+  ci: boolean;
+}
+
+export interface RunLogInit {
+  logDir: string;
+  cmd: "check" | "regen";
+  sourcePath: string;
+  extraFlags?: string;
+  lscVersion: string;
+}
+
+function safely<T>(fn: () => T): T | null {
+  try {
+    return fn();
+  } catch {
+    return null;
+  }
+}
+
+/** Create `<logDir>/.lemmascript/` with a `.gitignore` that ignores the whole directory. */
+export function ensureLogDir(logDir: string): string {
+  const dir = path.join(logDir, ".lemmascript");
+  mkdirSync(path.join(dir, "blobs"), { recursive: true });
+  const ignore = path.join(dir, ".gitignore");
+  if (!existsSync(ignore)) writeFileSync(ignore, "*\n");
+  return dir;
+}
+
+/** Store the source as `blobs/<hash>.ts` unless that version is already there. */
+export function snapshotSource(dir: string, text: string): string {
+  const hash = hashText(text);
+  const blob = path.join(dir, "blobs", `${hash}.ts`);
+  if (!existsSync(blob)) writeFileSync(blob, text);
+  return hash;
+}
+
+/**
+ * One verification run. `lsc.ts` creates it before generating; the code path
+ * where the run ends calls `finish` exactly once (later calls are ignored).
+ */
+export class RunLog {
+  private readonly dir: string | null;
+  private readonly tsHash: string | null;
+  private readonly startedAt = new Date().toISOString();
+  private textLogDir: string | null = null;
+  private done = false;
+
+  constructor(private readonly init: RunLogInit) {
+    this.dir = safely(() => ensureLogDir(init.logDir));
+    this.tsHash = this.dir === null ? null
+      : safely(() => snapshotSource(this.dir!, readFileSync(init.sourcePath, "utf8")));
+  }
+
+  private textLogPath(): string {
+    return path.join(this.textLogDir!, "verify.txt");
+  }
+
+  /** Extra Dafny arguments that write member outcomes to a temporary text log. */
+  dafnyArgs(): string[] {
+    this.textLogDir = safely(() => mkdtempSync(path.join(tmpdir(), "lsc-run-log-")));
+    return this.textLogDir === null ? [] : ["--log-format", `text;LogFileName=${this.textLogPath()}`];
+  }
+
+  /** Member outcomes from Dafny's text log, or null when Dafny wrote none. */
+  readResults(): MemberResults | null {
+    if (this.textLogDir === null) return null;
+    return safely(() => parseTextLog(readFileSync(this.textLogPath(), "utf8")));
+  }
+
+  /** Append this run's record. Never throws; only the first call writes. */
+  finish(outcome: { stage: RunStage; exit: number; dfyPath: string; results?: MemberResults | null }): void {
+    if (this.done) return;
+    this.done = true;
+    const dir = this.dir;
+    if (dir !== null) {
+      safely(() => {
+        const results = outcome.results ?? null;
+        const record: VerifyRecord = {
+          v: RUN_LOG_SCHEMA_VERSION,
+          type: "verify",
+          id: randomUUID(),
+          ts: this.startedAt,
+          cmd: this.init.cmd,
+          file: path.relative(this.init.logDir, this.init.sourcePath).split(path.sep).join("/"),
+          stage: outcome.stage,
+          exit: outcome.exit,
+          partial: results === null || isPartialRun(this.init.extraFlags),
+          failed: results?.failed ?? [],
+          passed: results?.passed ?? [],
+          tsHash: this.tsHash,
+          dfyHash: safely(() => hashText(readFileSync(outcome.dfyPath, "utf8"))),
+          lsc: this.init.lscVersion,
+          ci: Boolean(process.env.CI),
+        };
+        appendFileSync(path.join(dir, "runs.jsonl"), JSON.stringify(record) + "\n");
+      });
+    }
+    if (this.textLogDir !== null) {
+      const tmp = this.textLogDir;
+      safely(() => rmSync(tmp, { recursive: true, force: true }));
+    }
+  }
 }
