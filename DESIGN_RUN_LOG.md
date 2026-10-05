@@ -1,6 +1,6 @@
 # DESIGN_RUN_LOG — Counting what verification caught
 
-**Status:** proposal; nothing is implemented in `lsc`. A stopgap wrapper on the `lemmascript-catch-log` branch of lemmascript-skills confirmed the Dafny CSV approach in §2 against `lsc` 0.6.1, passing the flag through `--extra-flags`.
+**Status:** slice 1 implemented (recording `check` and `regen` runs). `lsc runs`, claimcheck records, labels and reports are not yet built. A stopgap wrapper on the `lemmascript-catch-log` branch of lemmascript-skills confirmed the Dafny CSV approach against `lsc` 0.6.1, passing the flag through `--extra-flags`; slice 1 uses the text format instead (§2).
 **Date:** September 2026
 
 ## Goal
@@ -11,6 +11,8 @@ Asking the agent to keep a tally at the end of a session does not give honest co
 
 Labeling a catch as a code bug or a spec bug happens afterward, at report time. A reporting skill reads the log, looks at what changed in the source between the failing and the passing run, and labels each catch from that diff. The agent doing the work has no extra duties while it works.
 
+In this document a **catch** is a fact about the history, not a bug: a member that failed in one run and passed in a later one. Most catches are ordinary proof work; only some are bugs, and §4 and §5 sort them.
+
 ## Requirements
 
 1. **Mechanical first.** A catch exists only if the log shows a failure followed by a pass. 
@@ -18,8 +20,9 @@ Labeling a catch as a code bug or a spec bug happens afterward, at report time. 
 3. **No change to what the user sees.** Logging does not alter `lsc` output, exit codes, or generated files. Dafny's output still streams to the terminal while it runs.
 4. **Invisible to git.** The log directory ignores itself, so it never shows up in `git status` and needs no `.gitignore` edit.
 5. **Code and proof are kept apart.** The record shows whether the fix touched the `.ts` (the program or its spec) or only the `.dfy` (the proof). The two are reported separately.
-6. **Labels are made after the fact, from evidence.** The log keeps enough to label a catch later without the working agent's memory: the source before and after the fix, and the error that preceded it.
+6. **Labels are made after the fact, from evidence.** The log keeps enough to label a catch later without the working agent's memory: the source before and after the fix, and the error that preceded it (error text is not yet recorded; see §2).
 7. **Claimcheck is counted the same way, and is not modified.** `lsc` reads the report file that claimcheck already writes.
+8. **Logging never fails a run.** A logging error (unwritable directory, full disk) is swallowed; output and exit codes are unchanged.
 
 ## 1. Where the log lives
 
@@ -31,7 +34,9 @@ Logging is on by default. A project turns it off with a config-only entry in the
 }
 ```
 
-`LSC_RUN_LOG=0` turns it off for a single run.
+`LSC_RUN_LOG=false` turns it off for a single run; like `lemmascript.json`, the variable accepts only `true` or `false`.
+
+`run-log` is config-only, not a `//@ option`: a file that could switch off its own logging would let an agent hide the failures the log exists to count.
 
 The log lives in `.lemmascript/` in the directory that holds the selected `lemmascript.json`. Without a config file, it goes in the git repository root, or in the current working directory outside a repository. When `lsc` creates the directory, it writes `.lemmascript/.gitignore` containing `*`, so git ignores the whole directory without any change to the project's own `.gitignore`.
 
@@ -48,33 +53,26 @@ The log lives in `.lemmascript/` in the directory that holds the selected `lemma
 `dafnyVerify` (`tools/src/dafny-commands.ts`) gains one extra Dafny argument when logging is on:
 
 ```
---log-format csv;LogFileName=<tmp>/verify.csv
+--log-format text;LogFileName=<tmp>/verify.txt
 ```
 
-Dafny writes one row per verified member and still prints its normal output. Here is the real output for a two-lemma file, one lemma good and one bad, run with Dafny 4.11:
+Dafny writes one `Results for <member> (<check>)` block per verified member, each with an `Overall outcome`, and its terminal output is unchanged. `lsc` keeps Dafny's stdio inherited. The CSV format was rejected because it always prints an extra `Results File:` line, which `lsc` could only remove by piping Dafny's output, and streaming piped output would make the whole check/regen path asynchronous. The cost is that records do not yet carry Dafny's error messages.
 
-```
-TestResult.DisplayName,TestResult.Outcome,TestResult.Duration,TestResult.ResourceCount,RandomSeed
-bad (correctness),Failed,00:00:00.0356494,3134,0
-good (correctness),Passed,00:00:00.0256170,3017,0
-```
-
-With this flag, Dafny also prints a `Results File: <path>` line, which `lsc` removes from the output it passes on.
-
-To keep the error text, `lsc` runs Dafny with its output piped rather than inherited and forwards each chunk to the terminal as it arrives. The output still streams, and `lsc` keeps a copy. After Dafny exits, `lsc` reads the CSV and appends one record:
+The helper that detects how the run ended appends one record: `dafnyCheckDiff` for `diff`, `dafnyVerify` for `ok`, `verify` and `resolve`, and `dafnyRegen` for `conflict` and `--no-verify` runs.
 
 ```json
-{"type":"verify","id":"r_7f3a","ts":"2026-09-30T21:14:02Z",
- "cmd":"check","file":"src/domain.ts","stage":"verify","exit":4,
+{"v":1,"type":"verify","id":"6f1c…","ts":"2026-10-05T21:14:02Z",
+ "cmd":"check","file":"src/domain.ts","stage":"verify","exit":1,"partial":false,
  "failed":["applyDiscount_ensures"],"passed":["clamp","clamp_ensures","applyDiscount"],
  "tsHash":"9c1e04b2d7aa","dfyHash":"41d0f93be812",
- "errors":["domain.dfy(41,2): Error: a postcondition could not be proved on this return path", "..."]}
+ "lsc":"0.6.4","ci":false}
 ```
 
-- **`stage`** tells where the run stopped. `diff` means the additions-only check failed, so Dafny never ran. `resolve` means Dafny exited with a parse or resolution error and wrote no CSV rows. `conflict` means a `regen` merge conflicted. `verify` means Dafny ran and wrote rows. `ok` means everything passed.
-- **`failed` / `passed`** are the member names with Dafny's ` (correctness)` / ` (well-formedness)` suffix removed. A member that fails on both counts appears once.
-- **`tsHash` / `dfyHash`** are the first 12 hex characters of the SHA-256 of the source `.ts` and of the proof `.dfy`. The `.ts` is hashed when the run starts. The `.dfy` is hashed after Dafny exits, because `check` may create it and `regen` may merge into it, and the post-run file is the one Dafny verified.
-- **`errors`** holds Dafny's `Error:` lines and their related-location lines, capped at 40 lines. It is present only on failing runs.
+- **`stage`** tells where the run stopped. `diff` means the additions-only check failed, so Dafny never ran. `resolve` means Dafny wrote no results (a parse or resolution error, or Dafny did not run). `conflict` means a `regen` merge conflicted. `verify` means Dafny ran and reported failures. `ok` means everything that ran passed.
+- **`failed` / `passed`** are member names. A member that fails either check appears once, in `failed`.
+- **`partial`** is `true` when the run did not report on every member: Dafny never ran or wrote no results, `regen --no-verify`, or a `--filter-symbol` / `--filter-position` flag. Only a non-partial run can make a member disappear (§4).
+- **`exit`** is the exit code `lsc` ends with. **`v`** is the record schema version; **`id`** is a random UUID; `lsc` (the version) and `ci` give context; fields such as the git commit can be added in a later schema version if records leave the machine.
+- **`tsHash` / `dfyHash`** are the first 12 hex characters of the SHA-256 of the source `.ts` and of the proof `.dfy`. The `.ts` is hashed when the run starts. The `.dfy` is hashed when the run ends, because `check` may create it and `regen` may merge into it.
 
 **Snapshots.** On every run, `lsc` copies the `.ts` to `.lemmascript/blobs/<tsHash>.ts` unless that file already exists. Most runs during proof work leave the `.ts` unchanged, so they add nothing. The `.dfy` is not snapshotted, because labeling only needs to see what changed in the program and its spec.
 
@@ -108,7 +106,7 @@ npx lsc runs report          # write a dated report of everything not yet report
 
 There are no sessions. `lsc runs` always derives catches from the whole log, because a failure can be fixed days after it happened, and then shows only what falls after the most recent report.
 
-**A verify catch** is a member `M` in file `F` that appears in `failed` in some run, and in `passed` in the first later run of `F`. Its kind comes from comparing the hashes of the two runs:
+**A verify catch** is a member `M` in file `F` that appears in `failed` in some run, and in `passed` in the first later run of `F` that reported on `M`. Runs that did not report on `M` (a `diff`, `resolve` or `conflict` stage, `--no-verify`, or a filter) are skipped. Its kind comes from comparing the hashes of the two runs:
 
 | `.ts` changed | `.dfy` changed | Kind |
 |---|---|---|
@@ -125,7 +123,7 @@ There are no sessions. `lsc runs` always derives catches from the whole log, bec
 | yes | yes | `both-fixed` |
 | no | no | `flaky`: claimcheck's LLM step changed its verdict on unchanged input. |
 
-A failure that has no later pass yet is **open**. If a member disappears from later runs because it was renamed or deleted, the failure is reported as **dropped**, never as a catch.
+A failure that has no later pass yet is **open**. If a member is missing from a later run that is not `partial`, because it was renamed or deleted, the failure is reported as **dropped**, never as a catch.
 
 Each catch has an ID, formed from the failing run and the member name, such as `r_7f3a:applyDiscount_ensures`.
 
@@ -222,7 +220,7 @@ The report file ends with one line per catch: its kind, label, file, failure dat
 |---|---|
 | `tools/src/config.ts` | Add a `run-log` registry entry (boolean, default `true`, config-only). |
 | `tools/src/run-log.ts` (new) | Create `.lemmascript/` with its `.gitignore`, append records, hash and snapshot files, read the Dafny CSV, extract error lines, derive catches, compute diffs and `change` hints, write labels, write dated reports and their markers. |
-| `tools/src/dafny-commands.ts` | `dafnyVerify` and `dafnyRegen` take an optional log context. When it is present, they add `--log-format`, pipe and forward Dafny's output instead of inheriting it, and append a record after Dafny exits. `dafnyCheckDiff` failures are recorded as `stage: "diff"`. |
+| `tools/src/dafny-commands.ts` | `dafnyCheckDiff`, `dafnyVerify` and `dafnyRegen` take an optional log context, and each records the stage it detects. `dafnyVerify` adds `--log-format text` and reads the member outcomes after Dafny exits; Dafny's output stays inherited. |
 | `tools/src/lsc.ts` | Pass the log context from resolved options. Record claimcheck results in both branches. Add the `runs`, `runs label`, and `runs report` subcommands. |
 | `tools/fixtures/` | One fixture that goes fail → proof fix → pass, one that goes fail → code fix → pass (`code-only`), and one that goes fail → annotation fix → pass (`annotations-only`), checking the derived kinds and hints. |
 | `lemmascript-catch-report` skill (new, in lemmascript-skills) | Label unlabeled `source-fix` catches from `lsc runs --json` evidence, list open claimcheck disputes for the user, and write the report. |

@@ -172,6 +172,8 @@ not implement routing themselves.
 - `lsc regen --backend=dafny foo.ts` — regenerate `.dfy.gen`, three-way merge, verify
 - `lsc check --backend=dafny foo.ts` — gen + additions-only check + `dafny verify`
 
+`check` and `regen` pass an optional `RunLog` (`run-log.ts`) to these helpers, and each records the stage it detects: `dafnyCheckDiff` records `diff`, `dafnyVerify` records `ok`/`verify`/`resolve`, and `dafnyRegen` records `conflict` and `--no-verify` runs. Dafny keeps inherited stdio; member outcomes come from `--log-format text` written to a temp file.
+
 ## Narrow Rules
 
 `narrow.ts` (structural-narrowing rewrite pass) takes typed IR and rewrites narrowing patterns into IR nodes that transform lowers uniformly: `someMatch` (binary, for optional checks) or `tagMatch` (multi-case, for discriminated unions). Each carries the scrutinee, the matched cases, and the fallthrough.
