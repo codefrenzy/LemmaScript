@@ -313,3 +313,12 @@ if (runs[1].dfyHash === runs[0].dfyHash || runs[2].dfyHash !== runs[0].dfyHash) 
 ' "$run_log_dir/.lemmascript/runs.jsonl"
 grep -qx '\*' "$run_log_dir/.lemmascript/.gitignore"
 expect_absent .lemmascript
+
+# "run-log": false in lemmascript.json keeps logging off; LSC_RUN_LOG=true leaves
+# the decision to the config rather than overriding it.
+run_log_off_dir="$fixture_dir/run-log-off-project"
+mkdir -p "$run_log_off_dir"
+echo '{ "run-log": false }' > "$run_log_off_dir/lemmascript.json"
+cp examples/arraySum.ts examples/arraySum.dfy "$run_log_off_dir/"
+LSC_RUN_LOG=true npx tsx tools/src/lsc.ts check --backend=dafny "$run_log_off_dir/arraySum.ts"
+expect_absent "$run_log_off_dir/.lemmascript"

@@ -38,7 +38,7 @@ Logging is on by default. A project turns it off with a config-only entry in the
 
 `run-log` is config-only, not a `//@ option`: a file that could switch off its own logging would let an agent hide the failures the log exists to count.
 
-The log lives in `.lemmascript/` in the directory that holds the selected `lemmascript.json`. Without a config file, it goes in the git repository root, or in the current working directory outside a repository. When `lsc` creates the directory, it writes `.lemmascript/.gitignore` containing `*`, so git ignores the whole directory without any change to the project's own `.gitignore`.
+The log lives in `.lemmascript/` in the directory that holds the selected `lemmascript.json`. Without a config file, it goes in the git repository root, or in the current working directory outside a repository; in that last case the run history depends on where `lsc` is run from, so add a `lemmascript.json` to anchor it. When `lsc` creates the directory, it writes `.lemmascript/.gitignore` containing `*`, so git ignores the whole directory without any change to the project's own `.gitignore`.
 
 ```
 .lemmascript/
@@ -220,7 +220,7 @@ The report file ends with one line per catch: its kind, label, file, failure dat
 |---|---|
 | `tools/src/config.ts` | Add a `run-log` registry entry (boolean, default `true`, config-only). |
 | `tools/src/run-log.ts` (new) | Create `.lemmascript/` with its `.gitignore`, append records, hash and snapshot files, read Dafny's text results file, derive catches, compute diffs and `change` hints, write labels, write dated reports and their markers. |
-| `tools/src/dafny-commands.ts` | `dafnyCheckDiff`, `dafnyVerify` and `dafnyRegen` take an optional log context, and each records the stage it detects. `dafnyVerify` adds `--log-format text` and reads the member outcomes after Dafny exits; Dafny's output stays inherited. |
+| `tools/src/dafny-commands.ts` | `dafnyCheckDiff`, `dafnyVerify` and `dafnyRegen` take an optional log context, and each records the stage it detects; recording lives there only because these helpers end runs with `process.exit`, and would move to `lsc.ts` if they returned outcomes instead. `dafnyVerify` adds `--log-format text` and reads the member outcomes after Dafny exits; Dafny's output stays inherited. |
 | `tools/src/lsc.ts` | Pass the log context from resolved options. Record claimcheck results in both branches. Add the `runs`, `runs label`, and `runs report` subcommands. |
 | `tools/fixtures/` | One fixture that goes fail → proof fix → pass, one that goes fail → code fix → pass (`code-only`), and one that goes fail → annotation fix → pass (`annotations-only`), checking the derived kinds and hints. |
 | `lemmascript-catch-report` skill (new, in lemmascript-skills) | Label unlabeled `source-fix` catches from `lsc runs --json` evidence, list open claimcheck disputes for the user, and write the report. |

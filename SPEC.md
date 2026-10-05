@@ -1334,6 +1334,8 @@ Default backend is Dafny. `extract` and `info` are backend-neutral and always ru
 - `--extra-flags=<string>` — extra flags forwarded verbatim to the backend prover.
 - `--slow` — in batch mode, verify entries whose manifest timeout exceeds 60s (otherwise those get `gen-check`, unless `--time-limit` is supplied).
 
+**Environment:** `LSC_RUN_LOG=false` turns the run log (§7.7) off for one invocation; `true` or unset leaves it to `run-log` in `lemmascript.json`. Any other value is an error. It is the only environment variable `lsc` reads.
+
 In batch mode, `--time-limit` and `--extra-flags` independently override the
 corresponding manifest values; omitted options retain the per-entry settings.
 For Dafny `check`, an explicit timeout enables verification even above 60s without `--slow`.

@@ -46,11 +46,11 @@ export function isPartialRun(extraFlags: string | undefined): boolean {
 }
 
 /**
- * `LSC_RUN_LOG=false` turns logging off for one run; `true` or unset leaves it
- * to the config. Like lemmascript.json, any other value is an error.
+ * Combine the `run-log` option with the `LSC_RUN_LOG` value lsc.ts read:
+ * `false` turns logging off for one run; `true` or unset leaves it to the
+ * config. Like lemmascript.json, any other value is an error.
  */
-export function runLogEnabled(option: boolean, env: NodeJS.ProcessEnv = process.env): boolean {
-  const value = env.LSC_RUN_LOG;
+export function runLogEnabled(option: boolean, value: string | undefined): boolean {
   if (value === undefined || value === "" || value === "true") return option;
   if (value === "false") return false;
   throw new Error(`LSC_RUN_LOG must be true or false (got ${JSON.stringify(value)})`);

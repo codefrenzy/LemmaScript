@@ -172,7 +172,7 @@ not implement routing themselves.
 - `lsc regen --backend=dafny foo.ts` — regenerate `.dfy.gen`, three-way merge, verify
 - `lsc check --backend=dafny foo.ts` — gen + additions-only check + `dafny verify`
 
-`check` and `regen` pass an optional `RunLog` (`run-log.ts`) to these helpers, and each records the stage it detects: `dafnyCheckDiff` records `diff`, `dafnyVerify` records `ok`/`verify`/`resolve`, and `dafnyRegen` records `conflict` and `--no-verify` runs. Dafny keeps inherited stdio; member outcomes come from `--log-format text` written to a temp file.
+`check` and `regen` pass an optional `RunLog` (`run-log.ts`) to these helpers, and each records the stage it detects: `dafnyCheckDiff` records `diff`, `dafnyVerify` records `ok`/`verify`/`resolve`, and `dafnyRegen` records `conflict` and `--no-verify` runs. Recording lives in the helpers only because they end runs with `process.exit`; if they ever return outcomes instead, it belongs in `lsc.ts`. Dafny keeps inherited stdio; member outcomes come from `--log-format text` written to a temp file.
 
 ## Narrow Rules
 
@@ -306,4 +306,5 @@ The Dafny emitter wraps `if-then-else` and `let` (var-binding) expressions in pa
 | `dafny-commands.ts` | CLI | Dafny gen/gen-check/regen/check commands |
 | `info-command.ts` | CLI | `lsc info` — per-function spec summary JSON; `--typed` — Typed IR contract for satellites |
 | `config.ts` | CLI/shared | Option registry, config discovery/validation, file overrides, artifact path mapping |
+| `run-log.ts` | CLI | Run log: `.lemmascript/` directory, source snapshots, one record per Dafny `check`/`regen` |
 | `lsc.ts` | CLI | Wires the pipeline, dispatches to backend |

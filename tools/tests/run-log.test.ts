@@ -146,17 +146,17 @@ test("filtered Dafny runs are partial", () => {
 });
 
 test("LSC_RUN_LOG=false turns logging off for one run; true or unset defers to config", () => {
-  assert.equal(runLogEnabled(true, {}), true);
-  assert.equal(runLogEnabled(false, {}), false);
-  assert.equal(runLogEnabled(true, { LSC_RUN_LOG: "false" }), false);
-  assert.equal(runLogEnabled(true, { LSC_RUN_LOG: "true" }), true);
-  assert.equal(runLogEnabled(false, { LSC_RUN_LOG: "true" }), false);
-  assert.equal(runLogEnabled(true, { LSC_RUN_LOG: "" }), true);
+  assert.equal(runLogEnabled(true, undefined), true);
+  assert.equal(runLogEnabled(false, undefined), false);
+  assert.equal(runLogEnabled(true, "false"), false);
+  assert.equal(runLogEnabled(true, "true"), true);
+  assert.equal(runLogEnabled(false, "true"), false);
+  assert.equal(runLogEnabled(true, ""), true);
 });
 
 test("LSC_RUN_LOG accepts only true or false, like lemmascript.json", () => {
   for (const value of ["0", "1", "no", "FALSE"]) {
-    assert.throws(() => runLogEnabled(true, { LSC_RUN_LOG: value }), /LSC_RUN_LOG must be true or false/);
+    assert.throws(() => runLogEnabled(true, value), /LSC_RUN_LOG must be true or false/);
   }
 });
 

@@ -338,8 +338,8 @@ function runFile(
 
   const fullText = sourceFile.getFullText();
   const { options, configFile } = effectiveOptions(absPath, fullText, configPath);
-  // Validate LSC_RUN_LOG for every command, as a bad config value would be.
-  const runLogOn = runLogEnabled(options["run-log"]);
+  // Checked here, for every command, so a bad LSC_RUN_LOG fails like a bad config value.
+  const runLogOn = runLogEnabled(options["run-log"], process.env.LSC_RUN_LOG);
 
   // Check //@ backend directive — skip if backend doesn't match.
   // `extract` and `info` are backend-neutral and always run.
