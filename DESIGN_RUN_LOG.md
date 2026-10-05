@@ -1,6 +1,6 @@
 # DESIGN_RUN_LOG — Counting what verification caught
 
-**Status:** slice 1 implemented (recording `check` and `regen` runs). `lsc runs`, claimcheck records, labels and reports are not yet built. A stopgap wrapper on the `lemmascript-catch-log` branch of lemmascript-skills confirmed the Dafny CSV approach against `lsc` 0.6.1, passing the flag through `--extra-flags`; slice 1 uses the text format instead (§2).
+**Status:** recording of `check` and `regen` runs is implemented (§1–§2). `lsc runs`, claimcheck records, labels and reports are not yet built. A stopgap wrapper on the `lemmascript-catch-log` branch of lemmascript-skills confirmed the Dafny CSV approach against `lsc` 0.6.1, passing the flag through `--extra-flags`; the implementation uses the text format instead (§2).
 **Date:** September 2026
 
 ## Goal
