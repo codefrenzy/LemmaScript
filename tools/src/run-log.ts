@@ -1,6 +1,7 @@
 /**
  * Run log: record each Dafny `lsc check` / `lsc regen` run in
- * `.lemmascript/runs.jsonl`, with a snapshot of the source, so that a later
+ * `.lemmascript/runs.jsonl` (a run where Dafny is not installed records
+ * nothing), with a snapshot of the source, so that a later
  * report can tell which failures were fixed and whether the fix changed the
  * program or only the proof. Logging must never change lsc's output or exit
  * code, so every filesystem step is best-effort and swallows its own errors.
@@ -12,58 +13,12 @@ import { tmpdir } from "os";
 import path from "path";
 import { findUp } from "./config.js";
 
+export const RUN_LOG_SCHEMA_VERSION = 1;
+
 export interface MemberResults {
   passed: string[];
   failed: string[];
 }
-
-/**
- * Parse Dafny's `--log-format text` file. Each member gets one entry per
- * check (`correctness`, `well-formedness`); it passes only if every check's
- * outcome is `Correct`.
- */
-export function parseTextLog(text: string): MemberResults {
-  const seen = new Set<string>();
-  const failed = new Set<string>();
-  for (const m of text.matchAll(/^Results for (.+?) \([a-z-]+\)\r?\n\s+Overall outcome: (\S+)/gm)) {
-    seen.add(m[1]);
-    if (m[2] !== "Correct") failed.add(m[1]);
-  }
-  return {
-    passed: [...seen].filter(name => !failed.has(name)).sort(),
-    failed: [...failed].sort(),
-  };
-}
-
-/** First 12 hex characters of the SHA-256 of `text`. */
-export function hashText(text: string): string {
-  return createHash("sha256").update(text).digest("hex").slice(0, 12);
-}
-
-/** A filtered Dafny run verifies only some members, so absences mean nothing. */
-export function isPartialRun(extraFlags: string | undefined): boolean {
-  return /--filter-(symbol|position)\b/.test(extraFlags ?? "");
-}
-
-/**
- * Combine the `run-log` option with the `LSC_RUN_LOG` value lsc.ts read:
- * `false` turns logging off for one run; `true` or unset leaves it to the
- * config. Like lemmascript.json, any other value is an error.
- */
-export function runLogEnabled(option: boolean, value: string | undefined): boolean {
-  if (value === undefined || value === "" || value === "true") return option;
-  if (value === "false") return false;
-  throw new Error(`LSC_RUN_LOG must be true or false (got ${JSON.stringify(value)})`);
-}
-
-/** The selected lemmascript.json's directory, else the source's git root, else cwd. */
-export function resolveLogDir(sourcePath: string, configFile: string | null): string {
-  if (configFile) return path.dirname(path.resolve(configFile));
-  const git = findUp(".git", sourcePath);
-  return git ? path.dirname(git) : process.cwd();
-}
-
-export const RUN_LOG_SCHEMA_VERSION = 1;
 
 /**
  * Where a run stopped: `diff` (additions-only check failed, Dafny never ran),
@@ -97,6 +52,52 @@ export interface RunLogInit {
   lscVersion: string;
 }
 
+/**
+ * Combine the `run-log` option with the `LSC_RUN_LOG` value lsc.ts read:
+ * `false` turns logging off for one run; `true` or unset leaves it to the
+ * config. Like lemmascript.json, any other value is an error.
+ */
+export function runLogEnabled(option: boolean, value: string | undefined): boolean {
+  if (value === undefined || value === "" || value === "true") return option;
+  if (value === "false") return false;
+  throw new Error(`LSC_RUN_LOG must be true or false (got ${JSON.stringify(value)})`);
+}
+
+/** The selected lemmascript.json's directory, else the source's git root, else cwd. */
+export function resolveLogDir(sourcePath: string, configFile: string | null): string {
+  if (configFile) return path.dirname(path.resolve(configFile));
+  const git = findUp(".git", sourcePath);
+  return git ? path.dirname(git) : process.cwd();
+}
+
+/** A filtered Dafny run verifies only some members, so absences mean nothing. */
+export function isPartialRun(extraFlags: string | undefined): boolean {
+  return /--filter-(symbol|position)\b/.test(extraFlags ?? "");
+}
+
+/**
+ * Parse Dafny's `--log-format text` file. Each member gets one entry per
+ * check (`correctness`, `well-formedness`); it passes only if every check's
+ * outcome is `Correct`.
+ */
+export function parseTextLog(text: string): MemberResults {
+  const seen = new Set<string>();
+  const failed = new Set<string>();
+  for (const m of text.matchAll(/^Results for (.+?) \([a-z-]+\)\r?\n\s+Overall outcome: (\S+)/gm)) {
+    seen.add(m[1]);
+    if (m[2] !== "Correct") failed.add(m[1]);
+  }
+  return {
+    passed: [...seen].filter(name => !failed.has(name)).sort(),
+    failed: [...failed].sort(),
+  };
+}
+
+/** First 12 hex characters of the SHA-256 of `text`. */
+export function hashText(text: string): string {
+  return createHash("sha256").update(text).digest("hex").slice(0, 12);
+}
+
 function safely<T>(fn: () => T): T | null {
   try {
     return fn();
@@ -123,8 +124,9 @@ export function snapshotSource(dir: string, text: string): string {
 }
 
 /**
- * One verification run. `lsc.ts` creates it before generating; the code path
- * where the run ends calls `finish` exactly once (later calls are ignored).
+ * One verification run. `lsc.ts` creates it before generating and passes it to
+ * the Dafny helpers; whichever helper sees how the run ended calls `finish`, or
+ * `discard` when nothing was verified. Only the first of these calls counts.
  */
 export class RunLog {
   private readonly dir: string | null;
@@ -137,10 +139,6 @@ export class RunLog {
     this.dir = safely(() => ensureLogDir(init.logDir));
     this.tsHash = this.dir === null ? null
       : safely(() => snapshotSource(this.dir!, readFileSync(init.sourcePath, "utf8")));
-  }
-
-  private textLogPath(): string {
-    return path.join(this.textLogDir!, "verify.txt");
   }
 
   /** Extra Dafny arguments that write member outcomes to a temporary text log. */
@@ -186,9 +184,23 @@ export class RunLog {
         appendFileSync(path.join(dir, "runs.jsonl"), JSON.stringify(record) + "\n");
       });
     }
-    if (this.textLogDir !== null) {
-      const tmp = this.textLogDir;
-      safely(() => rmSync(tmp, { recursive: true, force: true }));
-    }
+    this.removeTextLogDir();
+  }
+
+  /** End the run without a record, because nothing was verified (for example, no Dafny). */
+  discard(): void {
+    if (this.done) return;
+    this.done = true;
+    this.removeTextLogDir();
+  }
+
+  private textLogPath(): string {
+    return path.join(this.textLogDir!, "verify.txt");
+  }
+
+  private removeTextLogDir(): void {
+    if (this.textLogDir === null) return;
+    const tmp = this.textLogDir;
+    safely(() => rmSync(tmp, { recursive: true, force: true }));
   }
 }

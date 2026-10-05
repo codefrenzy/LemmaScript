@@ -387,6 +387,38 @@ test("an additions-only failure is recorded as diff", () => {
   }
 });
 
+test("a run where Dafny is not installed is not recorded", posixOnly, () => {
+  const root = tempDir();
+  const savedPath = process.env.PATH;
+  try {
+    mkdirSync(join(root, "empty-bin"));
+    process.env.PATH = join(root, "empty-bin");
+    assert.equal(verifyWithLog(root), false);
+    assert.equal(existsSync(join(root, ".lemmascript", "runs.jsonl")), false);
+  } finally {
+    process.env.PATH = savedPath;
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test("discard ends a run without a record and removes Dafny's temporary results folder", () => {
+  const root = tempDir();
+  try {
+    const source = join(root, "a.ts");
+    writeFileSync(source, "");
+    const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+    const file = log.dafnyArgs()[1].replace(/^text;LogFileName=/, "");
+    const folder = join(file, "..");
+    assert.ok(existsSync(folder));
+    log.discard();
+    log.finish({ stage: "ok", exit: 0, dfyPath: source });
+    assert.equal(existsSync(folder), false);
+    assert.equal(existsSync(join(root, ".lemmascript", "runs.jsonl")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("a passing additions-only check leaves the run open for verification to record", () => {
   const root = tempDir();
   try {

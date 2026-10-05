@@ -158,6 +158,8 @@ export function dafnyVerify(dfyPath: string, dir: string, timeLimit?: number, ex
   } catch (e: any) {
     if (e?.code === "ENOENT") {
       console.error("ERROR: `dafny` not found on PATH — verification never ran. Install Dafny 4.x: https://dafny.org/");
+      log?.discard();
+      return false;
     }
     // Dafny writes no results when it stops at parsing or resolution.
     const results = log?.readResults() ?? null;

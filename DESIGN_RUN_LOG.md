@@ -68,7 +68,7 @@ The helper that detects how the run ended appends one record: `dafnyCheckDiff` f
  "lsc":"0.6.4"}
 ```
 
-- **`stage`** tells where the run stopped. `diff` means the additions-only check failed, so Dafny never ran. `resolve` means Dafny wrote no results (a parse or resolution error, or Dafny did not run). `conflict` means a `regen` merge conflicted. `verify` means Dafny ran and reported failures. `ok` means everything that ran passed.
+- **`stage`** tells where the run stopped. `diff` means the additions-only check failed, so Dafny never ran. `resolve` means Dafny wrote no member results (a parse or resolution error, or `lsc` refused the proof before running Dafny). If Dafny is not installed, nothing was verified and the run is not recorded. `conflict` means a `regen` merge conflicted. `verify` means Dafny ran and reported failures. `ok` means everything that ran passed.
 - **`failed` / `passed`** are member names. A member that fails either check appears once, in `failed`.
 - **`partial`** is `true` when the run did not report on every member: Dafny never ran or wrote no results, `regen --no-verify`, or a `--filter-symbol` / `--filter-position` flag. Only a non-partial run can make a member disappear (§4).
 - **`exit`** is the exit code `lsc` ends with. **`v`** is the record schema version; **`id`** is a random UUID; `lsc` (the version) gives context; fields such as the git commit or whether the run came from CI can be added in a later schema version if records leave the machine.
