@@ -313,6 +313,24 @@ test("dafnyArgs points Dafny at a temporary text log that readResults parses", (
   }
 });
 
+test("discard ends a run without a record and removes Dafny's temporary results folder", () => {
+  const root = tempDir();
+  try {
+    const source = join(root, "a.ts");
+    writeFileSync(source, "");
+    const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+    const file = log.dafnyArgs()[1].replace(/^text;LogFileName=/, "");
+    const folder = join(file, "..");
+    assert.ok(existsSync(folder));
+    log.discard();
+    log.finish({ stage: "ok", exit: 0, dfyPath: source });
+    assert.equal(existsSync(folder), false);
+    assert.equal(existsSync(join(root, ".lemmascript", "runs.jsonl")), false);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 // Recording `check` runs.
 
 test("a passing verification is recorded as ok with its members", posixOnly, () =>
@@ -374,19 +392,6 @@ test("a proof lsc refuses before running Dafny is recorded as resolve", () => {
   }
 });
 
-test("an additions-only failure is recorded as diff", () => {
-  const root = tempDir();
-  try {
-    assert.equal(checkDiffWithLog(root, "method M() {}\n", "method Changed() {}\n"), false);
-    const [r] = records(root);
-    assert.equal(r.stage, "diff");
-    assert.equal(r.exit, 1);
-    assert.equal(r.partial, true);
-  } finally {
-    rmSync(root, { recursive: true, force: true });
-  }
-});
-
 test("a run where Dafny is not installed is not recorded", posixOnly, () => {
   const root = tempDir();
   const savedPath = process.env.PATH;
@@ -401,19 +406,14 @@ test("a run where Dafny is not installed is not recorded", posixOnly, () => {
   }
 });
 
-test("discard ends a run without a record and removes Dafny's temporary results folder", () => {
+test("an additions-only failure is recorded as diff", () => {
   const root = tempDir();
   try {
-    const source = join(root, "a.ts");
-    writeFileSync(source, "");
-    const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
-    const file = log.dafnyArgs()[1].replace(/^text;LogFileName=/, "");
-    const folder = join(file, "..");
-    assert.ok(existsSync(folder));
-    log.discard();
-    log.finish({ stage: "ok", exit: 0, dfyPath: source });
-    assert.equal(existsSync(folder), false);
-    assert.equal(existsSync(join(root, ".lemmascript", "runs.jsonl")), false);
+    assert.equal(checkDiffWithLog(root, "method M() {}\n", "method Changed() {}\n"), false);
+    const [r] = records(root);
+    assert.equal(r.stage, "diff");
+    assert.equal(r.exit, 1);
+    assert.equal(r.partial, true);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
