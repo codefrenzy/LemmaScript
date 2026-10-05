@@ -3,13 +3,20 @@ import assert from "node:assert/strict";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
-import { dafnyCheckDiff, dafnyVerify } from "../src/dafny-commands.ts";
+import { dafnyCheckDiff, dafnyRegen, dafnyVerify } from "../src/dafny-commands.ts";
 import {
   RunLog, ensureLogDir, hashText, isPartialRun, parseTextLog, resolveLogDir, runLogEnabled, snapshotSource,
 } from "../src/run-log.ts";
 
+const posixOnly = { skip: process.platform === "win32" };
+
 function tempDir(): string {
   return realpathSync(mkdtempSync(join(tmpdir(), "lsc-run-log-test-")));
+}
+
+function records(logDir: string): any[] {
+  return readFileSync(join(logDir, ".lemmascript", "runs.jsonl"), "utf8")
+    .trim().split("\n").map(line => JSON.parse(line));
 }
 
 // Trimmed from real Dafny 4.11 `--log-format text` output for a broken arraySum.
@@ -24,6 +31,89 @@ Results for arraySum (well-formedness)
 Results for arraySum (correctness)
   Overall outcome: Errors
 `;
+
+// A stand-in for `dafny`: writes $FAKE_DAFNY_LOG to the text log path it is
+// given (if any) and exits with $FAKE_DAFNY_EXIT.
+const FAKE_DAFNY = `#!/bin/sh
+out=""
+for arg in "$@"; do
+  case "$arg" in
+    "text;LogFileName="*) out="\${arg#text;LogFileName=}" ;;
+  esac
+done
+if [ -n "$out" ] && [ -n "$FAKE_DAFNY_LOG" ]; then printf '%s' "$FAKE_DAFNY_LOG" > "$out"; fi
+exit "\${FAKE_DAFNY_EXIT:-0}"
+`;
+
+function withFakeDafny(env: { log?: string; exit?: number }, run: (root: string) => void): void {
+  const root = tempDir();
+  const saved = { PATH: process.env.PATH, LOG: process.env.FAKE_DAFNY_LOG, EXIT: process.env.FAKE_DAFNY_EXIT };
+  try {
+    mkdirSync(join(root, "bin"));
+    writeFileSync(join(root, "bin", "dafny"), FAKE_DAFNY);
+    chmodSync(join(root, "bin", "dafny"), 0o755);
+    process.env.PATH = `${join(root, "bin")}${delimiter}${saved.PATH ?? ""}`;
+    if (env.log === undefined) delete process.env.FAKE_DAFNY_LOG; else process.env.FAKE_DAFNY_LOG = env.log;
+    process.env.FAKE_DAFNY_EXIT = String(env.exit ?? 0);
+    run(root);
+  } finally {
+    for (const [key, value] of [["PATH", saved.PATH], ["FAKE_DAFNY_LOG", saved.LOG], ["FAKE_DAFNY_EXIT", saved.EXIT]] as const) {
+      if (value === undefined) delete process.env[key]; else process.env[key] = value;
+    }
+    rmSync(root, { recursive: true, force: true });
+  }
+}
+
+function verifyWithLog(root: string): boolean {
+  const source = join(root, "a.ts");
+  const dfy = join(root, "a.dfy");
+  writeFileSync(source, "export const a = 1;\n");
+  writeFileSync(dfy, "lemma L() {}\n");
+  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+  return dafnyVerify(dfy, root, undefined, undefined, log);
+}
+
+function checkDiffWithLog(root: string, generated: string, proof: string): boolean {
+  const source = join(root, "a.ts");
+  const gen = join(root, "a.dfy.gen");
+  const dfy = join(root, "a.dfy");
+  writeFileSync(source, "");
+  writeFileSync(gen, generated);
+  writeFileSync(dfy, proof);
+  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
+  return dafnyCheckDiff(gen, dfy, log);
+}
+
+class ExitSignal extends Error {
+  constructor(readonly code: number | undefined) { super(`process.exit(${code})`); }
+}
+
+const generation = (n: number): string => `method M() {\n  var value := ${n};\n}\n`;
+const addition = "\nlemma AddedProof() {}\n";
+
+/** Run dafnyRegen with process.exit turned into a throw, then return the recorded run. */
+function regenRecord(root: string, proof: string, next: string, opts: { base?: string; noVerify?: boolean } = {}): any {
+  const f = { gen: join(root, "x.dfy.gen"), proof: join(root, "x.dfy"), base: join(root, "x.dfy.base"), source: join(root, "x.ts") };
+  writeFileSync(f.source, "");
+  writeFileSync(f.gen, generation(0));
+  writeFileSync(f.proof, proof);
+  if (opts.base) writeFileSync(f.base, opts.base);
+  const log = new RunLog({ logDir: root, cmd: "regen", sourcePath: f.source, lscVersion: "0" });
+  const originalExit = process.exit;
+  process.exit = ((code?: number) => { throw new ExitSignal(code); }) as typeof process.exit;
+  try {
+    dafnyRegen(f.gen, f.proof, f.base, next, root, undefined, undefined, opts.noVerify ?? false, log);
+  } catch (e) {
+    if (!(e instanceof ExitSignal)) throw e;
+  } finally {
+    process.exit = originalExit;
+  }
+  const all = records(root);
+  assert.equal(all.length, 1, "exactly one record per run");
+  return all[0];
+}
+
+// Parsing, hashing, settings and location.
 
 test("parseTextLog lists each member once, failed if any check failed", () => {
   assert.deepEqual(parseTextLog(TEXT_LOG), { passed: ["sumTo"], failed: ["arraySum"] });
@@ -83,10 +173,7 @@ test("the log lives beside lemmascript.json, else at the git root, else in cwd",
   }
 });
 
-function records(logDir: string): any[] {
-  return readFileSync(join(logDir, ".lemmascript", "runs.jsonl"), "utf8")
-    .trim().split("\n").map(line => JSON.parse(line));
-}
+// The log directory, snapshots and records.
 
 test("ensureLogDir creates a self-ignoring directory and keeps an edited .gitignore", () => {
   const root = tempDir();
@@ -205,48 +292,7 @@ test("dafnyArgs points Dafny at a temporary text log that readResults parses", (
   }
 });
 
-// A stand-in for `dafny`: writes $FAKE_DAFNY_LOG to the text log path it is
-// given (if any) and exits with $FAKE_DAFNY_EXIT.
-const FAKE_DAFNY = `#!/bin/sh
-out=""
-for arg in "$@"; do
-  case "$arg" in
-    "text;LogFileName="*) out="\${arg#text;LogFileName=}" ;;
-  esac
-done
-if [ -n "$out" ] && [ -n "$FAKE_DAFNY_LOG" ]; then printf '%s' "$FAKE_DAFNY_LOG" > "$out"; fi
-exit "\${FAKE_DAFNY_EXIT:-0}"
-`;
-
-function withFakeDafny(env: { log?: string; exit?: number }, run: (root: string) => void): void {
-  const root = tempDir();
-  const saved = { PATH: process.env.PATH, LOG: process.env.FAKE_DAFNY_LOG, EXIT: process.env.FAKE_DAFNY_EXIT };
-  try {
-    mkdirSync(join(root, "bin"));
-    writeFileSync(join(root, "bin", "dafny"), FAKE_DAFNY);
-    chmodSync(join(root, "bin", "dafny"), 0o755);
-    process.env.PATH = `${join(root, "bin")}${delimiter}${saved.PATH ?? ""}`;
-    if (env.log === undefined) delete process.env.FAKE_DAFNY_LOG; else process.env.FAKE_DAFNY_LOG = env.log;
-    process.env.FAKE_DAFNY_EXIT = String(env.exit ?? 0);
-    run(root);
-  } finally {
-    for (const [key, value] of [["PATH", saved.PATH], ["FAKE_DAFNY_LOG", saved.LOG], ["FAKE_DAFNY_EXIT", saved.EXIT]] as const) {
-      if (value === undefined) delete process.env[key]; else process.env[key] = value;
-    }
-    rmSync(root, { recursive: true, force: true });
-  }
-}
-
-function verifyWithLog(root: string): boolean {
-  const source = join(root, "a.ts");
-  const dfy = join(root, "a.dfy");
-  writeFileSync(source, "export const a = 1;\n");
-  writeFileSync(dfy, "lemma L() {}\n");
-  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
-  return dafnyVerify(dfy, root, undefined, undefined, log);
-}
-
-const posixOnly = { skip: process.platform === "win32" };
+// Recording `check` runs.
 
 test("a passing verification is recorded as ok with its members", posixOnly, () =>
   withFakeDafny({ log: "Results for L (correctness)\n  Overall outcome: Correct\n", exit: 0 }, root => {
@@ -275,17 +321,6 @@ test("a Dafny run that writes no results is recorded as resolve", posixOnly, () 
     assert.equal(r.partial, true);
   }));
 
-function checkDiffWithLog(root: string, generated: string, proof: string): boolean {
-  const source = join(root, "a.ts");
-  const gen = join(root, "a.dfy.gen");
-  const dfy = join(root, "a.dfy");
-  writeFileSync(source, "");
-  writeFileSync(gen, generated);
-  writeFileSync(dfy, proof);
-  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
-  return dafnyCheckDiff(gen, dfy, log);
-}
-
 test("an additions-only failure is recorded as diff", () => {
   const root = tempDir();
   try {
@@ -308,3 +343,34 @@ test("a passing additions-only check leaves the run open for verification to rec
     rmSync(root, { recursive: true, force: true });
   }
 });
+
+// Recording `regen` runs.
+
+test("a regen merge conflict is recorded before lsc exits", posixOnly, () =>
+  withFakeDafny({ exit: 0 }, root => {
+    const r = regenRecord(root, generation(99) + addition, generation(1));
+    assert.equal(r.stage, "conflict");
+    assert.equal(r.exit, 1);
+    assert.equal(r.partial, true);
+  }));
+
+test("a regen additions-only failure is recorded as diff", posixOnly, () =>
+  withFakeDafny({ exit: 0 }, root => {
+    const r = regenRecord(root, generation(99), generation(0), { base: generation(0) });
+    assert.equal(r.stage, "diff");
+  }));
+
+test("a regen verification failure is recorded as verify", posixOnly, () =>
+  withFakeDafny({ log: "Results for M (correctness)\n  Overall outcome: Errors\n", exit: 4 }, root => {
+    const r = regenRecord(root, generation(0) + addition, generation(1));
+    assert.equal(r.stage, "verify");
+    assert.deepEqual(r.failed, ["M"]);
+  }));
+
+test("a clean regen --no-verify is recorded as ok but partial", posixOnly, () =>
+  withFakeDafny({ exit: 0 }, root => {
+    const r = regenRecord(root, generation(0) + addition, generation(2), { noVerify: true });
+    assert.equal(r.stage, "ok");
+    assert.equal(r.exit, 0);
+    assert.equal(r.partial, true);
+  }));
