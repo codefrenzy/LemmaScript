@@ -338,6 +338,8 @@ function runFile(
 
   const fullText = sourceFile.getFullText();
   const { options, configFile } = effectiveOptions(absPath, fullText, configPath);
+  // Validate LSC_RUN_LOG for every command, as a bad config value would be.
+  const runLogOn = runLogEnabled(options["run-log"]);
 
   // Check //@ backend directive — skip if backend doesn't match.
   // `extract` and `info` are backend-neutral and always run.
@@ -424,7 +426,7 @@ function runFile(
     // Record check/regen runs in the run log. Created after the proof-dir guard
     // so an aborted run leaves no snapshot; each helper records the stage it detects.
     const logCmd = cmd === "check" || cmd === "regen" ? cmd : null;
-    const log = logCmd && runLogEnabled(options["run-log"])
+    const log = logCmd && runLogOn
       ? new RunLog({ logDir: resolveLogDir(absPath, configFile), cmd: logCmd, sourcePath: absPath, extraFlags, lscVersion: lscVersion() })
       : undefined;
 

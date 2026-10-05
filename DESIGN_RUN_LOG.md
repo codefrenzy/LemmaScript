@@ -65,13 +65,13 @@ The helper that detects how the run ended appends one record: `dafnyCheckDiff` f
  "cmd":"check","file":"src/domain.ts","stage":"verify","exit":1,"partial":false,
  "failed":["applyDiscount_ensures"],"passed":["clamp","clamp_ensures","applyDiscount"],
  "tsHash":"9c1e04b2d7aa","dfyHash":"41d0f93be812",
- "lsc":"0.6.4","ci":false}
+ "lsc":"0.6.4"}
 ```
 
 - **`stage`** tells where the run stopped. `diff` means the additions-only check failed, so Dafny never ran. `resolve` means Dafny wrote no results (a parse or resolution error, or Dafny did not run). `conflict` means a `regen` merge conflicted. `verify` means Dafny ran and reported failures. `ok` means everything that ran passed.
 - **`failed` / `passed`** are member names. A member that fails either check appears once, in `failed`.
 - **`partial`** is `true` when the run did not report on every member: Dafny never ran or wrote no results, `regen --no-verify`, or a `--filter-symbol` / `--filter-position` flag. Only a non-partial run can make a member disappear (§4).
-- **`exit`** is the exit code `lsc` ends with. **`v`** is the record schema version; **`id`** is a random UUID; `lsc` (the version) and `ci` give context; fields such as the git commit can be added in a later schema version if records leave the machine.
+- **`exit`** is the exit code `lsc` ends with. **`v`** is the record schema version; **`id`** is a random UUID; `lsc` (the version) gives context; fields such as the git commit or whether the run came from CI can be added in a later schema version if records leave the machine.
 - **`tsHash` / `dfyHash`** are the first 12 hex characters of the SHA-256 of the source `.ts` and of the proof `.dfy`. The `.ts` is hashed when the run starts. The `.dfy` is hashed when the run ends, because `check` may create it and `regen` may merge into it.
 
 **Snapshots.** On every run, `lsc` copies the `.ts` to `.lemmascript/blobs/<tsHash>.ts` unless that file already exists. Most runs during proof work leave the `.ts` unchanged, so they add nothing. The `.dfy` is not snapshotted, because labeling only needs to see what changed in the program and its spec.
@@ -219,7 +219,7 @@ The report file ends with one line per catch: its kind, label, file, failure dat
 | File | Change |
 |---|---|
 | `tools/src/config.ts` | Add a `run-log` registry entry (boolean, default `true`, config-only). |
-| `tools/src/run-log.ts` (new) | Create `.lemmascript/` with its `.gitignore`, append records, hash and snapshot files, read the Dafny CSV, extract error lines, derive catches, compute diffs and `change` hints, write labels, write dated reports and their markers. |
+| `tools/src/run-log.ts` (new) | Create `.lemmascript/` with its `.gitignore`, append records, hash and snapshot files, read Dafny's text results file, derive catches, compute diffs and `change` hints, write labels, write dated reports and their markers. |
 | `tools/src/dafny-commands.ts` | `dafnyCheckDiff`, `dafnyVerify` and `dafnyRegen` take an optional log context, and each records the stage it detects. `dafnyVerify` adds `--log-format text` and reads the member outcomes after Dafny exits; Dafny's output stays inherited. |
 | `tools/src/lsc.ts` | Pass the log context from resolved options. Record claimcheck results in both branches. Add the `runs`, `runs label`, and `runs report` subcommands. |
 | `tools/fixtures/` | One fixture that goes fail → proof fix → pass, one that goes fail → code fix → pass (`code-only`), and one that goes fail → annotation fix → pass (`annotations-only`), checking the derived kinds and hints. |

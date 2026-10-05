@@ -1,5 +1,8 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath } from "node:url";
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -33,15 +36,17 @@ Results for arraySum (correctness)
 `;
 
 // A stand-in for `dafny`: writes $FAKE_DAFNY_LOG to the text log path it is
-// given (if any) and exits with $FAKE_DAFNY_EXIT.
+// given (if any, even when empty), creates any CSV log a user asked for, and
+// exits with $FAKE_DAFNY_EXIT.
 const FAKE_DAFNY = `#!/bin/sh
 out=""
 for arg in "$@"; do
   case "$arg" in
     "text;LogFileName="*) out="\${arg#text;LogFileName=}" ;;
+    "csv;LogFileName="*) : > "\${arg#csv;LogFileName=}" ;;
   esac
 done
-if [ -n "$out" ] && [ -n "$FAKE_DAFNY_LOG" ]; then printf '%s' "$FAKE_DAFNY_LOG" > "$out"; fi
+if [ -n "$out" ] && [ "\${FAKE_DAFNY_LOG+set}" = set ]; then printf '%s' "$FAKE_DAFNY_LOG" > "$out"; fi
 exit "\${FAKE_DAFNY_EXIT:-0}"
 `;
 
@@ -64,13 +69,13 @@ function withFakeDafny(env: { log?: string; exit?: number }, run: (root: string)
   }
 }
 
-function verifyWithLog(root: string): boolean {
+function verifyWithLog(root: string, opts: { extraFlags?: string; proof?: string } = {}): boolean {
   const source = join(root, "a.ts");
   const dfy = join(root, "a.dfy");
   writeFileSync(source, "export const a = 1;\n");
-  writeFileSync(dfy, "lemma L() {}\n");
-  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, lscVersion: "0" });
-  return dafnyVerify(dfy, root, undefined, undefined, log);
+  writeFileSync(dfy, opts.proof ?? "lemma L() {}\n");
+  const log = new RunLog({ logDir: root, cmd: "check", sourcePath: source, extraFlags: opts.extraFlags, lscVersion: "0" });
+  return dafnyVerify(dfy, root, undefined, opts.extraFlags, log);
 }
 
 function checkDiffWithLog(root: string, generated: string, proof: string): boolean {
@@ -155,6 +160,23 @@ test("LSC_RUN_LOG accepts only true or false, like lemmascript.json", () => {
   }
 });
 
+test("a bad LSC_RUN_LOG is rejected by every file command, not only check and regen", () => {
+  const root = tempDir();
+  try {
+    const source = join(root, "a.ts");
+    writeFileSync(source, "export function identity(value: number): number { return value; }\n");
+    const cli = fileURLToPath(new URL("../src/lsc.ts", import.meta.url));
+    const loader = createRequire(import.meta.url).resolve("tsx");
+    const result = spawnSync(process.execPath, ["--import", loader, cli, "gen", "--backend=dafny", source], {
+      cwd: root, env: { ...process.env, LSC_RUN_LOG: "0" }, encoding: "utf8", timeout: 30_000,
+    });
+    assert.equal(result.status, 1, result.stdout);
+    assert.match(result.stderr, /LSC_RUN_LOG must be true or false/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 test("the log lives beside lemmascript.json, else at the git root, else in cwd", () => {
   const root = tempDir();
   try {
@@ -216,7 +238,7 @@ test("finish appends one complete record and ignores later calls", () => {
     const [r, ...rest] = records(root);
     assert.equal(rest.length, 0);
     assert.deepEqual(Object.keys(r).sort(), [
-      "ci", "cmd", "dfyHash", "exit", "failed", "file", "id", "lsc", "partial", "passed", "stage", "ts", "tsHash", "type", "v",
+      "cmd", "dfyHash", "exit", "failed", "file", "id", "lsc", "partial", "passed", "stage", "ts", "tsHash", "type", "v",
     ]);
     assert.equal(r.v, 1);
     assert.equal(r.type, "verify");
@@ -231,7 +253,6 @@ test("finish appends one complete record and ignores later calls", () => {
     assert.equal(r.tsHash, hashText("export const a = 1;\n"));
     assert.equal(r.dfyHash, hashText("lemma L() {}\n"));
     assert.equal(r.lsc, "9.9.9");
-    assert.equal(typeof r.ci, "boolean");
     assert.ok(existsSync(join(root, ".lemmascript", "blobs", `${r.tsHash}.ts`)));
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -320,6 +341,38 @@ test("a Dafny run that writes no results is recorded as resolve", posixOnly, () 
     assert.equal(r.stage, "resolve");
     assert.equal(r.partial, true);
   }));
+
+test("a Dafny resolution error, which writes an empty results file, is recorded as resolve", posixOnly, () =>
+  withFakeDafny({ log: "", exit: 2 }, root => {
+    assert.equal(verifyWithLog(root), false);
+    const [r] = records(root);
+    assert.equal(r.stage, "resolve");
+    assert.equal(r.partial, true);
+  }));
+
+test("a user's own --log-format still reaches Dafny alongside the run log's", posixOnly, () =>
+  withFakeDafny({ log: "Results for L (correctness)\n  Overall outcome: Correct\n", exit: 0 }, root => {
+    const mine = join(root, "mine.csv");
+    assert.equal(verifyWithLog(root, { extraFlags: `--log-format csv;LogFileName=${mine}` }), true);
+    assert.ok(existsSync(mine), "the user's CSV log was not written");
+    const [r] = records(root);
+    assert.equal(r.stage, "ok");
+    assert.deepEqual(r.passed, ["L"]);
+  }));
+
+test("a proof lsc refuses before running Dafny is recorded as resolve", () => {
+  const root = tempDir();
+  try {
+    // UTF-16 strings with Dafny's standard library: dafnyVerifyArgs refuses this combination.
+    const proof = "// lsc options: string-semantics=javascript-utf16\nimport opened Std.Strings\n";
+    assert.equal(verifyWithLog(root, { proof }), false);
+    const [r] = records(root);
+    assert.equal(r.stage, "resolve");
+    assert.equal(r.partial, true);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 test("an additions-only failure is recorded as diff", () => {
   const root = tempDir();

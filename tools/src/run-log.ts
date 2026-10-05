@@ -67,7 +67,7 @@ export const RUN_LOG_SCHEMA_VERSION = 1;
 
 /**
  * Where a run stopped: `diff` (additions-only check failed, Dafny never ran),
- * `conflict` (regen merge conflict), `resolve` (Dafny produced no results),
+ * `conflict` (regen merge conflict), `resolve` (Dafny produced no member results),
  * `verify` (Dafny reported failures), or `ok`.
  */
 export type RunStage = "ok" | "verify" | "resolve" | "diff" | "conflict";
@@ -87,7 +87,6 @@ export interface VerifyRecord {
   tsHash: string | null;
   dfyHash: string | null;
   lsc: string;
-  ci: boolean;
 }
 
 export interface RunLogInit {
@@ -150,10 +149,14 @@ export class RunLog {
     return this.textLogDir === null ? [] : ["--log-format", `text;LogFileName=${this.textLogPath()}`];
   }
 
-  /** Member outcomes from Dafny's text log, or null when Dafny wrote none. */
+  /**
+   * Member outcomes from Dafny's text log, or null when it names no members:
+   * Dafny writes no file for a parse error and an empty one for a resolution error.
+   */
   readResults(): MemberResults | null {
     if (this.textLogDir === null) return null;
-    return safely(() => parseTextLog(readFileSync(this.textLogPath(), "utf8")));
+    const results = safely(() => parseTextLog(readFileSync(this.textLogPath(), "utf8")));
+    return results && results.passed.length + results.failed.length > 0 ? results : null;
   }
 
   /** Append this run's record. Never throws; only the first call writes. */
@@ -179,7 +182,6 @@ export class RunLog {
           tsHash: this.tsHash,
           dfyHash: safely(() => hashText(readFileSync(outcome.dfyPath, "utf8"))),
           lsc: this.init.lscVersion,
-          ci: Boolean(process.env.CI),
         };
         appendFileSync(path.join(dir, "runs.jsonl"), JSON.stringify(record) + "\n");
       });
