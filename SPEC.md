@@ -1334,6 +1334,8 @@ Default backend is Dafny. `extract` and `info` are backend-neutral and always ru
 - `--extra-flags=<string>` — extra flags forwarded verbatim to the backend prover.
 - `--slow` — in batch mode, verify entries whose manifest timeout exceeds 60s (otherwise those get `gen-check`, unless `--time-limit` is supplied).
 
+**Environment:** `LSC_RUN_LOG=false` turns the run log (§7.7) off for one invocation; `true` or unset leaves it to `run-log` in `lemmascript.json`. Any other value is an error. It is the only environment variable `lsc` reads.
+
 In batch mode, `--time-limit` and `--extra-flags` independently override the
 corresponding manifest values; omitted options retain the per-entry settings.
 For Dafny `check`, an explicit timeout enables verification even above 60s without `--slow`.
@@ -1347,11 +1349,11 @@ For Dafny `check`, an explicit timeout enables verification even above 60s witho
 ### 7.2 `check`
 
 - **Lean:** gen + `lake build` (checks `.def.lean` + `.proof.lean` + `.spec.lean`)
-- **Dafny:** gen + additions-only check + `dafny verify`
+- **Dafny:** gen + additions-only check + `dafny verify`; the run is recorded in the run log (§7.7)
 
 ### 7.3 `regen` (Dafny only)
 
-Three-way merge when generated code changes. See [SPEC_DAFNY.md](SPEC_DAFNY.md).
+Three-way merge when generated code changes. See [SPEC_DAFNY.md](SPEC_DAFNY.md). Each run, including a conflict or additions-only failure, is recorded in the run log (§7.7).
 
 ### 7.4 `info`
 
@@ -1392,6 +1394,7 @@ it; absent means current behavior. Unknown keys and bad values are errors.
 | `proof-dir` | relative path | source directory | no (Dafny only) |
 | `string-semantics` | `unicode-scalar` \| `javascript-utf16` | `unicode-scalar` | yes (Dafny only) |
 | `dafny-library` | `stdlib` \| `local` | `stdlib` | yes (Dafny only) |
+| `run-log` | boolean | `true` | no (Dafny only) |
 
 Eligible settings use `//@ option <key> <value>` before the first source
 statement. File values override project values; duplicates are errors.
@@ -1422,6 +1425,22 @@ default `unicode-scalar` mode:
 See [examples/utf16.ts](examples/utf16.ts) and its Dafny proof. Compatibility is checked
 after project values and file directives are merged. Collection libraries may differ
 between files; unlike the string model, they do not change the meaning of contracts.
+
+### 7.7 Run log
+
+Every Dafny `check` and `regen` appends one JSON record to `.lemmascript/runs.jsonl`, in the
+directory of the selected `lemmascript.json` (else the source's git root, else the current
+directory), and stores the source as `.lemmascript/blobs/<hash>.ts`. The directory contains a
+`.gitignore` of `*`, so it never appears in `git status`. A record names the file, the command,
+the stage where the run stopped (`ok`, `verify`, `resolve`, `diff`, `conflict`), the members that
+passed and failed, hashes of the `.ts` and `.dfy`, and `partial: true` when the run did not
+report on every member. Logging never changes `lsc` output or exit codes.
+
+```json
+{ "run-log": false }
+```
+
+turns it off for a project; `LSC_RUN_LOG=false` turns it off for one run.
 
 ---
 

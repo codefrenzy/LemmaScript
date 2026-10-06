@@ -6,6 +6,7 @@ import { existsSync, readFileSync, writeFileSync, copyFileSync, unlinkSync } fro
 import { execFileSync } from "child_process";
 import path from "path";
 import { DEFAULT_OPTIONS, parseOptionValue, type LscOptions } from "./config.js";
+import type { RunLog } from "./run-log.js";
 
 function writeGen(genPath: string, text: string) {
   writeFileSync(genPath, text);
@@ -20,7 +21,13 @@ export function dafnyGen(genPath: string, dfyPath: string, text: string) {
   }
 }
 
-export function dafnyCheckDiff(genPath: string, dfyPath: string): boolean {
+export function dafnyCheckDiff(genPath: string, dfyPath: string, log?: RunLog): boolean {
+  const ok = additionsOnly(genPath, dfyPath);
+  if (!ok) log?.finish({ stage: "diff", exit: 1, dfyPath });
+  return ok;
+}
+
+function additionsOnly(genPath: string, dfyPath: string): boolean {
   for (const filePath of [genPath, dfyPath]) {
     if (!existsSync(filePath)) {
       console.error(`ERROR: cannot verify additions-only diff; file does not exist: ${filePath}`);
@@ -134,23 +141,34 @@ export function dafnyVerifyArgs(content: string, timeLimit?: number, extraFlags?
   return { args };
 }
 
-export function dafnyVerify(dfyPath: string, dir: string, timeLimit?: number, extraFlags?: string): boolean {
+export function dafnyVerify(dfyPath: string, dir: string, timeLimit?: number, extraFlags?: string, log?: RunLog): boolean {
   console.log("Running dafny verify...");
   try {
     const { args, error } = dafnyVerifyArgs(readFileSync(dfyPath, "utf-8"), timeLimit, extraFlags);
-    if (error) { console.error(error); return false; }
+    if (error) {
+      console.error(error);
+      log?.finish({ stage: "resolve", exit: 1, dfyPath });
+      return false;
+    }
+    if (log) args.push(...log.dafnyArgs());
     args.push(dfyPath);
     execFileSync("dafny", args, { cwd: dir, stdio: "inherit" });
+    log?.finish({ stage: "ok", exit: 0, dfyPath, results: log.readResults() });
     return true;
   } catch (e: any) {
     if (e?.code === "ENOENT") {
       console.error("ERROR: `dafny` not found on PATH — verification never ran. Install Dafny 4.x: https://dafny.org/");
+      log?.discard();
+      return false;
     }
+    // Dafny writes no results when it stops at parsing or resolution.
+    const results = log?.readResults() ?? null;
+    log?.finish({ stage: results ? "verify" : "resolve", exit: 1, dfyPath, results });
     return false;
   }
 }
 
-export function dafnyRegen(genPath: string, dfyPath: string, basePath: string, text: string, dir: string, timeLimit?: number, extraFlags?: string, noVerify = false) {
+export function dafnyRegen(genPath: string, dfyPath: string, basePath: string, text: string, dir: string, timeLimit?: number, extraFlags?: string, noVerify = false, log?: RunLog) {
   // 1. Read old gen before overwriting (needed for base seeding)
   const oldGen = existsSync(genPath) ? readFileSync(genPath, "utf-8") : "";
 
@@ -161,10 +179,11 @@ export function dafnyRegen(genPath: string, dfyPath: string, basePath: string, t
   if (!existsSync(dfyPath)) {
     writeFileSync(dfyPath, text);
     console.log(`Created: ${path.basename(dfyPath)}`);
-    if (!noVerify && !dafnyVerify(dfyPath, dir, timeLimit, extraFlags)) {
+    if (!noVerify && !dafnyVerify(dfyPath, dir, timeLimit, extraFlags, log)) {
       console.error(`FAILED: ${path.basename(dfyPath)} verification failed on first run.`);
       process.exit(1);
     }
+    log?.finish({ stage: "ok", exit: 0, dfyPath });
     return;
   }
 
@@ -185,6 +204,7 @@ export function dafnyRegen(genPath: string, dfyPath: string, basePath: string, t
         copyFileSync(dfyPath, mergedPath);
         writeFileSync(dfyPath, savedDfy);
         console.error(`CONFLICT: ${path.basename(dfyPath)} — merge had conflicts, dfy restored. See ${path.basename(mergedPath)}`);
+        log?.finish({ stage: "conflict", exit: 1, dfyPath });
         process.exit(1);
       }
       throw e;
@@ -192,13 +212,13 @@ export function dafnyRegen(genPath: string, dfyPath: string, basePath: string, t
   }
 
   // 6. Check gen invariant (unconditional)
-  if (!dafnyCheckDiff(genPath, dfyPath)) {
+  if (!dafnyCheckDiff(genPath, dfyPath, log)) {
     console.error(`FAILED: ${path.basename(dfyPath)} has modifications to generated lines.`);
     process.exit(1);
   }
 
   // 7. Verify (skipped under --no-verify: caller verifies separately)
-  if (!noVerify && !dafnyVerify(dfyPath, dir, timeLimit, extraFlags)) {
+  if (!noVerify && !dafnyVerify(dfyPath, dir, timeLimit, extraFlags, log)) {
     // The clean merge already incorporated this generation into the proof
     // file. Keep that generation as the next merge anchor even though the
     // verifier rejected the current proof state; otherwise the next regen
@@ -208,6 +228,8 @@ export function dafnyRegen(genPath: string, dfyPath: string, basePath: string, t
     process.exit(1);
   }
 
-  // 8. Success — delete base (gen is now the anchor)
+  // 8. Success — delete base (gen is now the anchor). After a verified run
+  // dafnyVerify has already recorded the outcome; this records --no-verify.
   if (existsSync(basePath)) unlinkSync(basePath);
+  log?.finish({ stage: "ok", exit: 0, dfyPath });
 }

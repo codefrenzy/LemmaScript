@@ -23,6 +23,8 @@ Default backend is Dafny. Pass `--backend=...` explicitly anyway — case-study 
 
 If `lemmascript.json` sets `proof-dir`, all Dafny companions (`.dfy.gen`, `.dfy`, `.dfy.base`, `.dfy.merged`) live in the mirrored directory reported by `lsc config`, not beside the TS file. The edit boundaries and regen rules below apply at that mapped location unchanged.
 
+`lsc check` and `lsc regen` record each Dafny run in `.lemmascript/` (self-ignored by git; see SPEC.md §7.7). Leave it alone — it is the record of what verification caught. `LSC_RUN_LOG=false` turns it off for one run.
+
 After editing `lsc` itself (anything under `tools/`), run `npm run build` before re-invoking `npx lsc` — the CLI runs the compiled `tools/dist/lsc.js`, not the TS source.
 
 ## File-edit boundaries

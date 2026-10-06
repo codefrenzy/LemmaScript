@@ -97,13 +97,21 @@ at the current directory. Use `--config=<path>` to pin a particular file.
   "string-semantics": "unicode-scalar",
   "dafny-library": "stdlib",
   "safe-slice": true,
-  "proof-dir": "proofs"
+  "proof-dir": "proofs",
+  "run-log": true
 }
 ```
 
 `dafny-library` selects `stdlib` (default) or generated `local` helpers for collection
 operations. Enabling `"string-semantics": "javascript-utf16"` requires explicitly setting
 `"dafny-library": "local"`; an omitted or explicit `stdlib` choice is an error.
+
+`run-log` (default `true`) records every Dafny `check` and `regen` in `.lemmascript/`
+beside `lemmascript.json` (without one, at the git repository root, or else in the current
+directory): one line per run in `runs.jsonl` (the stage it stopped at and
+which members passed or failed) plus a snapshot of the source. The directory ignores
+itself in git, and logging never changes `lsc` output or exit codes. Set it to `false` to
+turn logging off for the project, or `LSC_RUN_LOG=false` for a single run.
 
 A file can override both project settings before its first statement:
 
